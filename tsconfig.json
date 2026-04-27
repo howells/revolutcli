@@ -1,0 +1,11 @@
+{
+  "extends": "@howells/typescript-config/tsc-no-dom-app",
+  "compilerOptions": {
+    "declaration": true,
+    "outDir": "dist",
+    "rewriteRelativeImportExtensions": true,
+    "rootDir": "src"
+  },
+  "include": ["src/**/*"],
+  "exclude": ["src/**/*.test.ts"]
+}
