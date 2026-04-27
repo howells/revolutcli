@@ -77,4 +77,50 @@ describe("api()", () => {
       /Revolut API 401/,
     );
   });
+
+  it("classifies 401 as AUTH_REFUSED, not retriable", async () => {
+    globalThis.fetch = (async () =>
+      new Response("nope", { status: 401 })) as unknown as typeof fetch;
+    await expect(api({ token: "t", path: "/x" })).rejects.toMatchObject({
+      code: "AUTH_REFUSED",
+      status: 401,
+      is_retriable: false,
+    });
+  });
+
+  it("classifies 429 as RATE_LIMITED, retriable, with retry_after_seconds", async () => {
+    globalThis.fetch = (async () =>
+      new Response("rate limited", {
+        status: 429,
+        headers: { "retry-after": "30" },
+      })) as unknown as typeof fetch;
+    await expect(api({ token: "t", path: "/x" })).rejects.toMatchObject({
+      code: "RATE_LIMITED",
+      status: 429,
+      is_retriable: true,
+      retry_after_seconds: 30,
+    });
+  });
+
+  it("classifies 503 as API_ERROR, retriable", async () => {
+    globalThis.fetch = (async () =>
+      new Response("upstream down", {
+        status: 503,
+      })) as unknown as typeof fetch;
+    await expect(api({ token: "t", path: "/x" })).rejects.toMatchObject({
+      code: "API_ERROR",
+      status: 503,
+      is_retriable: true,
+    });
+  });
+
+  it("classifies network failures as NETWORK_ERROR, retriable", async () => {
+    globalThis.fetch = (async () => {
+      throw new TypeError("fetch failed");
+    }) as unknown as typeof fetch;
+    await expect(api({ token: "t", path: "/x" })).rejects.toMatchObject({
+      code: "NETWORK_ERROR",
+      is_retriable: true,
+    });
+  });
 });

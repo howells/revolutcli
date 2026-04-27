@@ -14,15 +14,26 @@ import { readFileSync } from "node:fs";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { RevolutError } from "./errors.ts";
 
 const TOKEN_URL = `https://b2b.revolut.com/api/1.0/auth/token`;
 const AUTHORIZE_URL = "https://business.revolut.com/app-confirm";
 
 /** Directory holding cached tokens. 0700 perms enforced on write. */
-export const TOKEN_DIR = join(homedir(), ".revolutcli");
+export function getTokenDir(): string {
+  return join(homedir(), ".revolutcli");
+}
 
 /** Path to the cached token file. 0600 perms enforced on write. */
-export const TOKEN_PATH = join(TOKEN_DIR, "tokens.json");
+export function getTokenPath(): string {
+  return join(getTokenDir(), "tokens.json");
+}
+
+// Convenience aliases. Tests that override HOME between imports should call
+// getTokenPath() / getTokenDir() instead of reading these — they are
+// snapshotted once at module load.
+export const TOKEN_DIR = getTokenDir();
+export const TOKEN_PATH = getTokenPath();
 
 export interface CachedTokens {
   access_token: string;
@@ -35,8 +46,13 @@ export interface CachedTokens {
 export function getClientId(): string {
   const id = process.env.REVOLUT_CLIENT_ID?.trim();
   if (!id) {
-    throw new Error(
+    throw new RevolutError(
       "REVOLUT_CLIENT_ID env var is required. Get it from https://business.revolut.com/settings/api",
+      {
+        code: "USAGE",
+        is_retriable: false,
+        recovery_hint: "Set REVOLUT_CLIENT_ID and re-run.",
+      },
     );
   }
   return id;
@@ -46,15 +62,26 @@ export function getClientId(): string {
 export function getPrivateKey(): string {
   const keyPath = process.env.REVOLUT_PRIVATE_KEY_PATH?.trim();
   if (!keyPath) {
-    throw new Error(
+    throw new RevolutError(
       "REVOLUT_PRIVATE_KEY_PATH env var is required (path to your RSA private key PEM).",
+      {
+        code: "USAGE",
+        is_retriable: false,
+        recovery_hint: "Set REVOLUT_PRIVATE_KEY_PATH and re-run.",
+      },
     );
   }
   try {
     return readFileSync(keyPath, "utf8");
   } catch {
-    throw new Error(
+    throw new RevolutError(
       `Cannot read private key at ${keyPath} — check REVOLUT_PRIVATE_KEY_PATH.`,
+      {
+        code: "USAGE",
+        is_retriable: false,
+        recovery_hint:
+          "Verify the file exists and is readable. Re-export REVOLUT_PRIVATE_KEY_PATH.",
+      },
     );
   }
 }
@@ -109,7 +136,7 @@ export function buildAuthorizeUrl(
 /** Load cached tokens from disk. Returns null if the cache is missing. */
 export async function loadCachedTokens(): Promise<CachedTokens | null> {
   try {
-    const content = await readFile(TOKEN_PATH, "utf8");
+    const content = await readFile(getTokenPath(), "utf8");
     return JSON.parse(content) as CachedTokens;
   } catch {
     return null;
@@ -117,10 +144,12 @@ export async function loadCachedTokens(): Promise<CachedTokens | null> {
 }
 
 export async function saveTokens(tokens: CachedTokens): Promise<void> {
-  await mkdir(TOKEN_DIR, { recursive: true });
-  await chmod(TOKEN_DIR, 0o700);
-  await writeFile(TOKEN_PATH, JSON.stringify(tokens, null, 2), "utf8");
-  await chmod(TOKEN_PATH, 0o600);
+  const dir = getTokenDir();
+  const path = getTokenPath();
+  await mkdir(dir, { recursive: true });
+  await chmod(dir, 0o700);
+  await writeFile(path, JSON.stringify(tokens, null, 2), "utf8");
+  await chmod(path, 0o600);
 }
 
 interface TokenResponse {
@@ -149,12 +178,22 @@ export async function exchangeCode(code: string): Promise<CachedTokens> {
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Token exchange failed (${res.status}): ${text}`);
+    throw new RevolutError(`Token exchange failed (${res.status}): ${text}`, {
+      code: "AUTH_REFUSED",
+      status: res.status,
+      is_retriable: false,
+      recovery_hint:
+        "The authorization code is short-lived and single-use. Re-run: revolutcli auth",
+    });
   }
 
   const data = (await res.json()) as TokenResponse;
   if (!data.refresh_token) {
-    throw new Error("Token exchange returned no refresh_token");
+    throw new RevolutError("Token exchange returned no refresh_token", {
+      code: "AUTH_REFUSED",
+      is_retriable: false,
+      recovery_hint: "Re-run: revolutcli auth",
+    });
   }
   const tokens: CachedTokens = {
     access_token: data.access_token,
@@ -188,9 +227,13 @@ export async function refreshAccessToken(
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(
-      `Token refresh failed (${res.status}): ${text}. Re-run: revolutcli auth`,
-    );
+    throw new RevolutError(`Token refresh failed (${res.status}): ${text}`, {
+      code: "AUTH_EXPIRED",
+      status: res.status,
+      is_retriable: false,
+      recovery_hint:
+        "Refresh token is no longer valid. Re-run: revolutcli auth",
+    });
   }
 
   const data = (await res.json()) as TokenResponse;
@@ -213,7 +256,11 @@ export async function getAccessToken(
 ): Promise<string> {
   const cached = await loadCachedTokens();
   if (!cached) {
-    throw new Error("No cached tokens. Run: revolutcli auth");
+    throw new RevolutError("No cached tokens. Run: revolutcli auth", {
+      code: "AUTH_MISSING",
+      is_retriable: false,
+      recovery_hint: "Run: revolutcli auth",
+    });
   }
 
   if (now < cached.expires_at - 60_000) {

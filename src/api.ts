@@ -1,3 +1,5 @@
+import { RevolutError } from "./errors.ts";
+
 /** Base URL for the Revolut Business API. */
 export const BASE_URL = "https://b2b.revolut.com";
 
@@ -16,7 +18,8 @@ export interface ApiOptions {
 /**
  * Make an authenticated GET request to the Revolut Business API.
  *
- * @throws Error if the response status is not 2xx.
+ * @throws RevolutError with structured status + retriability fields agents
+ *   can act on without parsing the message string.
  */
 export async function api<T>({
   token,
@@ -36,17 +39,30 @@ export async function api<T>({
     if (qs) url += `?${qs}`;
   }
 
-  const res = await fetch(url, {
-    method,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/json",
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+      },
+    });
+  } catch (err) {
+    throw new RevolutError(
+      `Network error contacting Revolut: ${err instanceof Error ? err.message : String(err)}`,
+      {
+        code: "NETWORK_ERROR",
+        is_retriable: true,
+        recovery_hint: "Check connectivity and retry.",
+        cause: err,
+      },
+    );
+  }
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`Revolut API ${res.status}: ${text || res.statusText}`);
+    throw classifyHttpError(res, text);
   }
 
   const contentType = res.headers.get("content-type") ?? "";
@@ -54,6 +70,55 @@ export async function api<T>({
     return (await res.json()) as T;
   }
   return {} as T;
+}
+
+function classifyHttpError(res: Response, body: string): RevolutError {
+  const status = res.status;
+  const detail = body || res.statusText;
+
+  if (status === 401 || status === 403) {
+    return new RevolutError(`Revolut API ${status}: ${detail}`, {
+      code: "AUTH_REFUSED",
+      status,
+      is_retriable: false,
+      recovery_hint: "Re-run: revolutcli auth",
+    });
+  }
+
+  if (status === 429) {
+    const retryAfter = parseRetryAfter(res.headers.get("retry-after"));
+    return new RevolutError(`Revolut API 429: ${detail}`, {
+      code: "RATE_LIMITED",
+      status,
+      is_retriable: true,
+      retry_after_seconds: retryAfter,
+      recovery_hint: retryAfter
+        ? `Wait ${retryAfter}s and retry.`
+        : "Wait and retry.",
+    });
+  }
+
+  if (status >= 500) {
+    return new RevolutError(`Revolut API ${status}: ${detail}`, {
+      code: "API_ERROR",
+      status,
+      is_retriable: true,
+      recovery_hint: "Transient upstream failure. Retry with backoff.",
+    });
+  }
+
+  return new RevolutError(`Revolut API ${status}: ${detail}`, {
+    code: "API_ERROR",
+    status,
+    is_retriable: false,
+  });
+}
+
+/** Parse a Retry-After header (seconds form only — HTTP-date form is rare). */
+function parseRetryAfter(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const n = Number.parseInt(value.trim(), 10);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
 }
 
 /**

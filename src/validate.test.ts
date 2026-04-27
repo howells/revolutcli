@@ -52,9 +52,23 @@ describe("validateDate", () => {
     );
   });
 
-  it("rejects control characters", () => {
+  it("rejects control characters (NUL)", () => {
     expectExits(
-      () => validateDate("2026-04-01", "from", "transactions"),
+      () => validateDate("2026-04-01\x00", "from", "transactions"),
+      /control characters/,
+    );
+  });
+
+  it("rejects tab character", () => {
+    expectExits(
+      () => validateDate("\t2026-04-01", "from", "transactions"),
+      /control characters/,
+    );
+  });
+
+  it("rejects newline character", () => {
+    expectExits(
+      () => validateDate("2026-04-01\n", "from", "transactions"),
       /control characters/,
     );
   });
@@ -69,5 +83,13 @@ describe("validateAccountName", () => {
 
   it("rejects path traversal", () => {
     expectExits(() => validateAccountName("../etc", "balance"));
+  });
+
+  it("rejects strings over 64 chars", () => {
+    expectExits(() => validateAccountName("a".repeat(65), "balance"));
+  });
+
+  it("rejects percent-encoded characters", () => {
+    expectExits(() => validateAccountName("foo%20bar", "balance"));
   });
 });

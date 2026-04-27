@@ -1,0 +1,14 @@
+{
+  "$schema": "https://modelcontextprotocol.io/schemas/0.1/mcp.json",
+  "mcpServers": {
+    "revolut": {
+      "command": "revolutcli-mcp",
+      "args": [],
+      "env": {
+        "REVOLUT_CLIENT_ID": "${REVOLUT_CLIENT_ID}",
+        "REVOLUT_PRIVATE_KEY_PATH": "${REVOLUT_PRIVATE_KEY_PATH}"
+      },
+      "description": "Read-only access to Revolut Business sub-accounts and transactions. Run `revolutcli auth` once before first use."
+    }
+  }
+}

@@ -80,6 +80,16 @@ describe("balance", () => {
       /anvil-cottage, thanet/,
     );
   });
+
+  it("throws RevolutError with ACCOUNT_NOT_FOUND code", async () => {
+    mockFetch(() => fakeAccountResponse);
+    await expect(balance("token", "missing")).rejects.toMatchObject({
+      code: "ACCOUNT_NOT_FOUND",
+      is_retriable: false,
+      suggestions: ["anvil-cottage", "thanet"],
+      recovery_hint: "Run: revolutcli accounts",
+    });
+  });
 });
 
 describe("transactions", () => {
@@ -129,7 +139,7 @@ describe("transactions", () => {
       );
     }) as unknown as typeof fetch;
 
-    const rows = await transactions("token", "anvil-cottage", {
+    const page = await transactions("token", "anvil-cottage", {
       from: "2026-04-01",
       limit: 5,
     });
@@ -137,12 +147,78 @@ describe("transactions", () => {
     expect(lastUrl).toContain("account=acc-1");
     expect(lastUrl).toContain("from=2026-04-01");
     expect(lastUrl).toContain("count=5");
-    expect(rows[0]).toMatchObject({
+    expect(page.data[0]).toMatchObject({
       id: "tx-1",
       counterParty: "Caffe Nero",
       amount: -3.5,
       formatted: "£-3.50",
       category: "5814",
+    });
+    expect(page.meta).toEqual({
+      returned: 1,
+      limit: 5,
+      has_more: false,
+    });
+  });
+
+  it("flags has_more when returned matches the requested limit", async () => {
+    globalThis.fetch = (async (url: string) => {
+      if (url.includes("/accounts")) {
+        return new Response(JSON.stringify(fakeAccountResponse), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      // Return exactly 2 rows for limit=2 — pagination heuristic
+      return new Response(
+        JSON.stringify([
+          {
+            id: "tx-1",
+            type: "card_payment",
+            state: "completed",
+            created_at: "2026-04-10T08:00:00Z",
+            legs: [
+              {
+                leg_id: "leg-1",
+                account_id: "acc-1",
+                amount: -1,
+                currency: "GBP",
+              },
+            ],
+          },
+          {
+            id: "tx-2",
+            type: "card_payment",
+            state: "completed",
+            created_at: "2026-04-11T08:00:00Z",
+            legs: [
+              {
+                leg_id: "leg-2",
+                account_id: "acc-1",
+                amount: -2,
+                currency: "GBP",
+              },
+            ],
+          },
+        ]),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+
+    const page = await transactions("token", "anvil-cottage", { limit: 2 });
+    expect(page.meta.has_more).toBe(true);
+    expect(page.meta.returned).toBe(2);
+    expect(page.meta.limit).toBe(2);
+  });
+
+  it("throws ACCOUNT_NOT_FOUND with structured suggestions", async () => {
+    mockFetch(() => fakeAccountResponse);
+    await expect(
+      transactions("token", "missing-account"),
+    ).rejects.toMatchObject({
+      code: "ACCOUNT_NOT_FOUND",
+      is_retriable: false,
+      suggestions: ["anvil-cottage", "thanet"],
     });
   });
 });

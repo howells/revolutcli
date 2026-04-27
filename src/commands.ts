@@ -1,5 +1,6 @@
 import { findAccount, listAccounts, type ResolvedAccount } from "./accounts.ts";
 import { api, formatAmount } from "./api.ts";
+import { RevolutError } from "./errors.ts";
 
 export interface BalanceRow {
   id: string;
@@ -40,11 +41,7 @@ export async function balance(
   const accounts = await listAccounts(token);
   const match = findAccount(accounts, accountName);
   if (!match) {
-    throw new Error(
-      `No sub-account "${accountName}". Available: ${
-        accounts.map((a) => a.slug).join(", ") || "none"
-      }.`,
-    );
+    throw accountNotFound(accountName, accounts);
   }
   return toBalanceRow(match);
 }
@@ -85,6 +82,27 @@ export interface TransactionRow {
   category: string;
 }
 
+/** Pagination metadata returned alongside a transaction page. */
+export interface PageMeta {
+  /** Number of rows in this response. */
+  returned: number;
+  /** The limit that was applied (effective cap). */
+  limit: number;
+  /**
+   * True when the response was truncated by `limit`. Agents should fetch the
+   * next page (using `to` set to the oldest result's `date`) to continue.
+   *
+   * Heuristic: `returned === limit`. Revolut's API doesn't return a cursor, so
+   * exactness here is best-effort.
+   */
+  has_more: boolean;
+}
+
+export interface TransactionsPage {
+  data: TransactionRow[];
+  meta: PageMeta;
+}
+
 function pickCounterParty(tx: RevolutTransaction, accountId: string): string {
   if (tx.merchant?.name) return tx.merchant.name;
   const otherLeg = tx.legs.find((l) => l.account_id !== accountId);
@@ -123,24 +141,27 @@ export interface TransactionsOptions {
   limit?: number;
 }
 
+export const DEFAULT_TRANSACTIONS_LIMIT = 100;
+
 /**
  * List transactions for a single sub-account. Revolut's transactions endpoint
  * is connection-wide, so we resolve the slug to an account_id and filter.
+ *
+ * Returns a page envelope with `data` and `meta.has_more` so agents can
+ * detect truncation without comparing lengths client-side.
  */
 export async function transactions(
   token: string,
   accountName: string,
   options: TransactionsOptions = {},
-): Promise<TransactionRow[]> {
+): Promise<TransactionsPage> {
   const accounts = await listAccounts(token);
   const match = findAccount(accounts, accountName);
   if (!match) {
-    throw new Error(
-      `No sub-account "${accountName}". Available: ${
-        accounts.map((a) => a.slug).join(", ") || "none"
-      }.`,
-    );
+    throw accountNotFound(accountName, accounts);
   }
+
+  const limit = options.limit ?? DEFAULT_TRANSACTIONS_LIMIT;
 
   const txs = await api<RevolutTransaction[]>({
     token,
@@ -149,9 +170,34 @@ export async function transactions(
       account: match.id,
       from: options.from,
       to: options.to,
-      count: options.limit ?? 100,
+      count: limit,
     },
   });
 
-  return txs.map((tx) => toTransactionRow(tx, match.id));
+  const rows = txs.map((tx) => toTransactionRow(tx, match.id));
+  return {
+    data: rows,
+    meta: {
+      returned: rows.length,
+      limit,
+      has_more: rows.length >= limit,
+    },
+  };
+}
+
+function accountNotFound(
+  name: string,
+  accounts: ResolvedAccount[],
+): RevolutError {
+  const slugs = accounts.map((a) => a.slug);
+  const available = slugs.join(", ") || "none";
+  return new RevolutError(
+    `No sub-account "${name}". Available: ${available}.`,
+    {
+      code: "ACCOUNT_NOT_FOUND",
+      is_retriable: false,
+      suggestions: slugs,
+      recovery_hint: "Run: revolutcli accounts",
+    },
+  );
 }

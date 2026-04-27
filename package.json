@@ -23,17 +23,20 @@
     "linux"
   ],
   "bin": {
-    "revolutcli": "./dist/index.js"
+    "revolutcli": "./dist/index.js",
+    "revolutcli-mcp": "./dist/mcp.js"
   },
   "files": [
     "dist",
     "AGENTS.md",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    ".mcp.json"
   ],
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
+    "dev:mcp": "tsx src/mcp.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "lint": "howells-lint",
@@ -59,6 +62,8 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@howells/cli": "^0.1.0"
+    "@howells/cli": "^0.1.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.3.6"
   }
 }
