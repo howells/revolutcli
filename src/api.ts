@@ -1,4 +1,8 @@
-import { RevolutError } from "./errors.ts";
+import {
+  CliError,
+  classifyHttpError,
+  classifyNetworkError,
+} from "@howells/cli";
 
 /** Base URL for the Revolut Business API. */
 export const BASE_URL = "https://b2b.revolut.com";
@@ -9,7 +13,6 @@ export interface ApiOptions {
   token: string;
   /** API path, appended to {@link BASE_URL} (e.g. `/api/1.0/accounts`). */
   path: string;
-  /** HTTP method. Default: GET. revolutcli is read-only so non-GET is rare. */
   method?: "GET";
   /** Query string parameters. Values are stringified and URL-encoded. */
   query?: Record<string, string | number | undefined>;
@@ -18,8 +21,10 @@ export interface ApiOptions {
 /**
  * Make an authenticated GET request to the Revolut Business API.
  *
- * @throws RevolutError with structured status + retriability fields agents
- *   can act on without parsing the message string.
+ * @throws CliError with structured `code`, `status`, `is_retriable`, and
+ *   recovery hints. Uses {@link classifyHttpError} from @howells/cli plus a
+ *   Revolut-specific override for the `9002` IP-whitelist code (which
+ *   re-auth cannot fix).
  */
 export async function api<T>({
   token,
@@ -49,20 +54,38 @@ export async function api<T>({
       },
     });
   } catch (err) {
-    throw new RevolutError(
-      `Network error contacting Revolut: ${err instanceof Error ? err.message : String(err)}`,
-      {
-        code: "NETWORK_ERROR",
-        is_retriable: true,
-        recovery_hint: "Check connectivity and retry.",
-        cause: err,
-      },
-    );
+    throw classifyNetworkError(err, { vendor: "Revolut" });
   }
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw classifyHttpError(res, text);
+    throw classifyHttpError(res, text, {
+      vendor: "Revolut",
+      authRecoveryHint: "Re-run: revolutcli auth",
+      scopeRecoveryHint:
+        "Verify the Revolut app has the required scopes (READ for accounts/transactions). Check the response body for the specific issue.",
+      override(status, parsed) {
+        // 403 with code 9002 = IP-whitelist policy denial. Re-auth doesn't
+        // help — only adding the egress IP to the app's whitelist does.
+        if (
+          status === 403 &&
+          parsed.vendorCode === REVOLUT_CODE.IP_NOT_WHITELISTED
+        ) {
+          return new CliError(
+            `Revolut API ${status}: ${parsed.detail || res.statusText}`,
+            {
+              code: "IP_NOT_WHITELISTED",
+              status,
+              is_retriable: false,
+              recovery_hint:
+                "This IP is not on the Revolut Business app whitelist. Add it at https://business.revolut.com/settings/api → your app → IP whitelist (or disable the whitelist). Re-running auth will not help.",
+              extra: { revolut_error_code: parsed.vendorCode },
+            },
+          );
+        }
+        return undefined;
+      },
+    });
   }
 
   const contentType = res.headers.get("content-type") ?? "";
@@ -77,116 +100,11 @@ const REVOLUT_CODE = {
   IP_NOT_WHITELISTED: 9002,
 } as const;
 
-interface ParsedRevolutError {
-  /** Numeric code from Revolut's body, when present. */
-  revolut_error_code?: number;
-  /** Human message from Revolut's body, when present. Fallback to body text. */
-  detail: string;
-}
-
 /**
- * Revolut's 4xx and 5xx responses are usually JSON: `{ message, code }`. We
- * parse them so agents can route on the vendor code instead of grepping the
- * message string. Falls back to the raw body when not parseable.
+ * Re-export of @howells/cli's `parseVendorErrorBody` under the old name so
+ * existing tests continue to import it from this module.
  */
-export function parseRevolutErrorBody(body: string): ParsedRevolutError {
-  if (!body) return { detail: "" };
-  try {
-    const parsed = JSON.parse(body) as { message?: unknown; code?: unknown };
-    const detail =
-      typeof parsed.message === "string" && parsed.message.length > 0
-        ? parsed.message
-        : body;
-    const revolut_error_code =
-      typeof parsed.code === "number" ? parsed.code : undefined;
-    return { detail, revolut_error_code };
-  } catch {
-    return { detail: body };
-  }
-}
-
-function classifyHttpError(res: Response, body: string): RevolutError {
-  const status = res.status;
-  const { detail, revolut_error_code } = parseRevolutErrorBody(body);
-  const message = `Revolut API ${status}: ${detail || res.statusText}`;
-
-  // 403 with code 9002 is specifically an IP-whitelist policy denial — not
-  // a credential problem, so re-auth doesn't help. Route to its own code.
-  if (
-    status === 403 &&
-    revolut_error_code === REVOLUT_CODE.IP_NOT_WHITELISTED
-  ) {
-    return new RevolutError(message, {
-      code: "IP_NOT_WHITELISTED",
-      status,
-      revolut_error_code,
-      is_retriable: false,
-      recovery_hint:
-        "This IP is not on the Revolut Business app whitelist. Add it at https://business.revolut.com/settings/api → your app → IP whitelist (or disable the whitelist). Re-running auth will not help.",
-    });
-  }
-
-  // Plain 401: token expired or invalid signature — re-auth helps.
-  if (status === 401) {
-    return new RevolutError(message, {
-      code: "AUTH_REFUSED",
-      status,
-      revolut_error_code,
-      is_retriable: false,
-      recovery_hint: "Re-run: revolutcli auth",
-    });
-  }
-
-  // 403 without a known vendor code: most often missing scope on the app.
-  if (status === 403) {
-    return new RevolutError(message, {
-      code: "INSUFFICIENT_SCOPE",
-      status,
-      revolut_error_code,
-      is_retriable: false,
-      recovery_hint:
-        "Verify the Revolut app has the required scopes (READ for accounts/transactions). Check the response body for the specific issue.",
-    });
-  }
-
-  if (status === 429) {
-    const retryAfter = parseRetryAfter(res.headers.get("retry-after"));
-    return new RevolutError(message, {
-      code: "RATE_LIMITED",
-      status,
-      revolut_error_code,
-      is_retriable: true,
-      retry_after_seconds: retryAfter,
-      recovery_hint: retryAfter
-        ? `Wait ${retryAfter}s and retry.`
-        : "Wait and retry.",
-    });
-  }
-
-  if (status >= 500) {
-    return new RevolutError(message, {
-      code: "API_ERROR",
-      status,
-      revolut_error_code,
-      is_retriable: true,
-      recovery_hint: "Transient upstream failure. Retry with backoff.",
-    });
-  }
-
-  return new RevolutError(message, {
-    code: "API_ERROR",
-    status,
-    revolut_error_code,
-    is_retriable: false,
-  });
-}
-
-/** Parse a Retry-After header (seconds form only — HTTP-date form is rare). */
-function parseRetryAfter(value: string | null): number | undefined {
-  if (!value) return undefined;
-  const n = Number.parseInt(value.trim(), 10);
-  return Number.isFinite(n) && n >= 0 ? n : undefined;
-}
+export { parseVendorErrorBody as parseRevolutErrorBody } from "@howells/cli";
 
 /**
  * Format a numeric balance as a currency string.

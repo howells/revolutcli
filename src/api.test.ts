@@ -135,8 +135,8 @@ describe("api()", () => {
     await expect(api({ token: "t", path: "/x" })).rejects.toMatchObject({
       code: "IP_NOT_WHITELISTED",
       status: 403,
-      revolut_error_code: 9002,
       is_retriable: false,
+      extra: { revolut_error_code: 9002 },
     });
   });
 
@@ -147,8 +147,8 @@ describe("api()", () => {
     await expect(api({ token: "t", path: "/x" })).rejects.toMatchObject({
       code: "INSUFFICIENT_SCOPE",
       status: 403,
-      revolut_error_code: 1234,
       is_retriable: false,
+      extra: { revolut_error_code: 1234 },
     });
   });
 
@@ -159,7 +159,7 @@ describe("api()", () => {
     await expect(api({ token: "t", path: "/x" })).rejects.toMatchObject({
       code: "AUTH_REFUSED",
       status: 401,
-      revolut_error_code: 1041,
+      extra: { revolut_error_code: 1041 },
     });
   });
 
@@ -181,7 +181,7 @@ describe("parseRevolutErrorBody", () => {
     const { parseRevolutErrorBody } = await import("./api.ts");
     expect(
       parseRevolutErrorBody(JSON.stringify({ message: "nope", code: 9002 })),
-    ).toEqual({ detail: "nope", revolut_error_code: 9002 });
+    ).toEqual({ detail: "nope", vendorCode: 9002 });
   });
 
   it("returns raw body as detail when not JSON", async () => {
@@ -191,11 +191,11 @@ describe("parseRevolutErrorBody", () => {
     });
   });
 
-  it("ignores non-numeric code field", async () => {
+  it("preserves string code field as vendorCode", async () => {
     const { parseRevolutErrorBody } = await import("./api.ts");
     expect(
       parseRevolutErrorBody(JSON.stringify({ message: "x", code: "9002" })),
-    ).toEqual({ detail: "x" });
+    ).toEqual({ detail: "x", vendorCode: "9002" });
   });
 
   it("handles empty body", async () => {

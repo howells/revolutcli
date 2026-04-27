@@ -21,6 +21,11 @@
  * same {code, is_retriable, recovery_hint} shape they get from the CLI.
  */
 
+import {
+  type McpToolResult,
+  toMcpToolError,
+  toMcpToolResult,
+} from "@howells/cli/mcp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -32,65 +37,25 @@ import {
   type TransactionsOptions,
   transactions,
 } from "./commands.ts";
-import { RevolutError } from "./errors.ts";
 import { SCHEMA } from "./schema.ts";
 
-interface McpToolResult {
-  [key: string]: unknown;
-  content: { type: "text"; text: string }[];
-  structuredContent?: Record<string, unknown>;
-  isError?: boolean;
-}
-
 /**
- * Translate an unknown thrown value into the structured tool error envelope
- * agents expect — same shape as the CLI's error JSON.
+ * Wrap a successful payload as a `{ ok: true, data, ...extra }` MCP tool
+ * envelope. Mirrors the CLI's stdout shape so an agent's parsing logic
+ * works against either transport.
  */
-function tool_error(err: unknown): McpToolResult {
-  const re = err instanceof RevolutError ? err : null;
-  const envelope = re
-    ? {
-        ok: false,
-        error: re.message,
-        code: re.code,
-        is_retriable: re.is_retriable,
-        ...(re.status !== undefined ? { status: re.status } : {}),
-        ...(re.revolut_error_code !== undefined
-          ? { revolut_error_code: re.revolut_error_code }
-          : {}),
-        ...(re.retry_after_seconds !== undefined
-          ? { retry_after_seconds: re.retry_after_seconds }
-          : {}),
-        ...(re.recovery_hint ? { recovery_hint: re.recovery_hint } : {}),
-        ...(re.suggestions && re.suggestions.length > 0
-          ? { suggestions: re.suggestions }
-          : {}),
-      }
-    : {
-        ok: false,
-        error: err instanceof Error ? err.message : String(err),
-        code: "INTERNAL" as const,
-        is_retriable: false,
-      };
-
-  return {
-    content: [{ type: "text", text: JSON.stringify(envelope, null, 2) }],
-    structuredContent: envelope,
-    isError: true,
-  };
-}
-
-/** Translate a successful payload into the standard envelope. */
 function tool_ok(
   data: unknown,
   extra?: Record<string, unknown>,
 ): McpToolResult {
-  const envelope = { ok: true as const, data, ...(extra ?? {}) };
-  return {
-    content: [{ type: "text", text: JSON.stringify(envelope, null, 2) }],
-    structuredContent: envelope as Record<string, unknown>,
-  };
+  return toMcpToolResult({ ok: true as const, data, ...(extra ?? {}) });
 }
+
+/**
+ * Translate any thrown value to the MCP tool error envelope. Delegates to
+ * `@howells/cli/mcp` so the shape stays identical to the CLI's stderr JSON.
+ */
+const tool_error = toMcpToolError;
 
 export function buildServer(): McpServer {
   const server = new McpServer(

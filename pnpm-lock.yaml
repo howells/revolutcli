@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@howells/cli':
-        specifier: ^0.1.0
-        version: 0.1.0
+        specifier: ^0.2.0
+        version: 0.2.0
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@4.3.6)
@@ -278,8 +278,8 @@ packages:
     peerDependencies:
       hono: ^4
 
-  '@howells/cli@0.1.0':
-    resolution: {integrity: sha512-nJ/0tAjVkG2dQgZiIVkLXL7PT1e8cxyGTQb8AmjSgciJex2YgUjuELcrxXyXX9PtEpWuk+wxX4IIAEVeVIOeXA==}
+  '@howells/cli@0.2.0':
+    resolution: {integrity: sha512-XdQJGtHlPKQ0ARXOQn/ssJKsUTetWww+19g/EU8eASwe72yiYYL42E8EFXGOt9IPwgKfeja9IbH8Ivw35kEX8Q==}
     engines: {node: '>=20'}
 
   '@howells/husky@0.1.0':
@@ -1419,7 +1419,7 @@ snapshots:
     dependencies:
       hono: 4.12.15
 
-  '@howells/cli@0.1.0': {}
+  '@howells/cli@0.2.0': {}
 
   '@howells/husky@0.1.0':
     dependencies:
