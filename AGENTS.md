@@ -60,7 +60,13 @@ Sub-accounts are discovered from the API, not env vars. Names are slugified for 
 - `Cathcart Phase 1` → `--account cathcart-phase-1`
 - `Revolut [GBP] [Thanet]` → `--account revolut-gbp-thanet`
 
-Run `revolutcli accounts` to see the canonical list of slugs available right now.
+**Edge cases the slug resolver handles:**
+
+- **Duplicate names**: two accounts both called `Main` (one EUR, one USD) become `main-eur` and `main-usd`. Currency is appended to all colliding members.
+- **Missing name**: Revolut sometimes returns accounts with no `name` field. They become `unnamed-<currency>` (e.g. `unnamed-gbp`).
+- **Same currency collisions**: in the rare case two accounts share both a name and a currency, the second gets a 6-char id suffix (`main-gbp-bbbbbb`).
+
+Run `revolutcli accounts` to see the canonical list of slugs available right now — never hardcode them.
 
 ## Transaction Fields
 
