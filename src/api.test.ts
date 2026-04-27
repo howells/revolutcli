@@ -123,4 +123,83 @@ describe("api()", () => {
       is_retriable: true,
     });
   });
+
+  it("classifies 403 with code 9002 as IP_NOT_WHITELISTED", async () => {
+    // Live shape we observed from Revolut.
+    const body = JSON.stringify({
+      message: "IP address not whitelisted. Verify IP whitelist configuration.",
+      code: 9002,
+    });
+    globalThis.fetch = (async () =>
+      new Response(body, { status: 403 })) as unknown as typeof fetch;
+    await expect(api({ token: "t", path: "/x" })).rejects.toMatchObject({
+      code: "IP_NOT_WHITELISTED",
+      status: 403,
+      revolut_error_code: 9002,
+      is_retriable: false,
+    });
+  });
+
+  it("403 without a known vendor code falls through to INSUFFICIENT_SCOPE", async () => {
+    const body = JSON.stringify({ message: "Forbidden", code: 1234 });
+    globalThis.fetch = (async () =>
+      new Response(body, { status: 403 })) as unknown as typeof fetch;
+    await expect(api({ token: "t", path: "/x" })).rejects.toMatchObject({
+      code: "INSUFFICIENT_SCOPE",
+      status: 403,
+      revolut_error_code: 1234,
+      is_retriable: false,
+    });
+  });
+
+  it("surfaces revolut_error_code on 401 too", async () => {
+    const body = JSON.stringify({ message: "Token expired", code: 1041 });
+    globalThis.fetch = (async () =>
+      new Response(body, { status: 401 })) as unknown as typeof fetch;
+    await expect(api({ token: "t", path: "/x" })).rejects.toMatchObject({
+      code: "AUTH_REFUSED",
+      status: 401,
+      revolut_error_code: 1041,
+    });
+  });
+
+  it("falls back gracefully when error body is not JSON", async () => {
+    globalThis.fetch = (async () =>
+      new Response("upstream-html-page", {
+        status: 502,
+      })) as unknown as typeof fetch;
+    await expect(api({ token: "t", path: "/x" })).rejects.toMatchObject({
+      code: "API_ERROR",
+      status: 502,
+      is_retriable: true,
+    });
+  });
+});
+
+describe("parseRevolutErrorBody", () => {
+  it("extracts message and numeric code from JSON body", async () => {
+    const { parseRevolutErrorBody } = await import("./api.ts");
+    expect(
+      parseRevolutErrorBody(JSON.stringify({ message: "nope", code: 9002 })),
+    ).toEqual({ detail: "nope", revolut_error_code: 9002 });
+  });
+
+  it("returns raw body as detail when not JSON", async () => {
+    const { parseRevolutErrorBody } = await import("./api.ts");
+    expect(parseRevolutErrorBody("<html>oops</html>")).toEqual({
+      detail: "<html>oops</html>",
+    });
+  });
+
+  it("ignores non-numeric code field", async () => {
+    const { parseRevolutErrorBody } = await import("./api.ts");
+    expect(
+      parseRevolutErrorBody(JSON.stringify({ message: "x", code: "9002" })),
+    ).toEqual({ detail: "x" });
+  });
+
+  it("handles empty body", async () => {
+    const { parseRevolutErrorBody } = await import("./api.ts");
+    expect(parseRevolutErrorBody("")).toEqual({ detail: "" });
+  });
 });

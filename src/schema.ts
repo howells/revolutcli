@@ -27,10 +27,13 @@ export const SCHEMA = {
       is_retriable: "boolean",
       command: "string",
       status: "number?",
+      revolut_error_code: "number?",
       retry_after_seconds: "number?",
       recovery_hint: "string?",
       suggestions: "string[]?",
     },
+    encoding:
+      "Pretty-printed JSON (2-space indent) when stdout is a TTY; compact single-line JSON when piped. The `transactions --ndjson` flag emits one row per line plus a trailing { ok, meta } line for streaming consumers.",
   },
   exit_codes: {
     "0": "Success",
@@ -41,18 +44,33 @@ export const SCHEMA = {
     "77": "Permission denied (auth missing, expired, refused)",
     "78": "Not found (sub-account slug did not resolve)",
   },
-  error_codes: [
-    "AUTH_MISSING",
-    "AUTH_EXPIRED",
-    "AUTH_REFUSED",
-    "VALIDATION",
-    "ACCOUNT_NOT_FOUND",
-    "RATE_LIMITED",
-    "API_ERROR",
-    "NETWORK_ERROR",
-    "USAGE",
-    "INTERNAL",
-  ],
+  error_codes: {
+    AUTH_MISSING:
+      "No cached tokens. Ask the human to run `revolutcli auth`. Not retriable.",
+    AUTH_EXPIRED:
+      "Refresh-token rotation failed. Ask the human to re-run `revolutcli auth`. Not retriable.",
+    AUTH_REFUSED:
+      "Credentials rejected (HTTP 401). Re-run auth. Not retriable.",
+    IP_NOT_WHITELISTED:
+      "Revolut returned 403 with code 9002. The egress IP is not on the app's whitelist. Add it at https://business.revolut.com/settings/api → IP whitelist. Not retriable; re-auth will not help.",
+    INSUFFICIENT_SCOPE:
+      "HTTP 403 with no IP-whitelist signal — usually missing API scopes. Read the body for specifics. Not retriable.",
+    VALIDATION:
+      "Input failed format check (ISO date, slug shape, etc.). Fix and re-call. Not retriable.",
+    ACCOUNT_NOT_FOUND:
+      "Slug did not resolve. Read `suggestions[]` for valid slugs. Not retriable.",
+    RATE_LIMITED:
+      "HTTP 429. Wait `retry_after_seconds` (when present) and retry. Retriable.",
+    API_ERROR:
+      "Other HTTP failure. Retriable when `is_retriable: true` (i.e. 5xx).",
+    NETWORK_ERROR: "Network failure reaching Revolut. Retriable.",
+    USAGE: "Bad flags or missing required args. Surface to the human.",
+    INTERNAL: "Bug. Surface to the human.",
+  },
+  revolut_error_codes: {
+    "9002":
+      "IP address not whitelisted. Routed to IP_NOT_WHITELISTED so agents don't conflate it with credential errors.",
+  },
   auth: {
     mechanism: "OAuth 2.0 authorization code + JWT client assertion (RS256)",
     envVars: {
@@ -161,6 +179,12 @@ export const SCHEMA = {
           example: "counterParty,amount,date",
           required: false,
         },
+        ndjson: {
+          type: "boolean",
+          description:
+            "Emit one JSON object per line (NDJSON) instead of a single envelope. Final line is { ok: true, meta: {...} } so consumers can still detect truncation.",
+          required: false,
+        },
       },
       annotations: { readOnlyHint: true, idempotentHint: true },
       fields: [
@@ -188,6 +212,12 @@ export const SCHEMA = {
       params: {},
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
+    version: {
+      description:
+        "Print the CLI name and version as a JSON envelope. Use to verify which release is installed.",
+      params: {},
+      annotations: { readOnlyHint: true, idempotentHint: true },
+    },
   },
   flags: {
     "--account":
@@ -196,14 +226,22 @@ export const SCHEMA = {
     "--to": "ISO 8601 date — transactions on or before this",
     "--limit": "Max results (default 100)",
     "--fields": "Comma-separated field names to return",
+    "--ndjson": "(transactions only) emit NDJSON instead of a wrapped envelope",
     "--code": "Authorization code for non-interactive `auth` (skips prompt)",
   },
 } as const;
 
 export const HELP = {
   usage:
-    "revolutcli <command> [--account <slug>|all] [--from <date>] [--to <date>] [--limit N] [--fields ...]",
-  commands: ["auth", "accounts", "balance", "transactions", "schema"],
+    "revolutcli <command> [--account <slug>|all] [--from <date>] [--to <date>] [--limit N] [--fields ...] [--ndjson]",
+  commands: [
+    "auth",
+    "accounts",
+    "balance",
+    "transactions",
+    "schema",
+    "version",
+  ],
   setup: [
     "1. Set REVOLUT_CLIENT_ID and REVOLUT_PRIVATE_KEY_PATH env vars.",
     "2. Run: revolutcli auth (one-time OAuth consent). Pass --code <value> to skip the stdin prompt.",
@@ -216,11 +254,13 @@ export const HELP = {
     "--to": "ISO 8601 date — transactions on or before this",
     "--limit": "Max results",
     "--fields": "Comma-separated field names to return",
+    "--ndjson": "(transactions only) emit NDJSON instead of a wrapped envelope",
     "--code": "Authorization code for non-interactive `auth`",
   },
   notes: [
     "Read-only by design — no transfers, no payment drafts, no counterparty management.",
     "All errors are JSON: { ok: false, error, code, is_retriable, recovery_hint? }.",
+    "JSON is pretty-printed when stdout is a TTY, compact when piped.",
     "Run 'revolutcli schema' for the full machine-readable surface description.",
   ],
 } as const;

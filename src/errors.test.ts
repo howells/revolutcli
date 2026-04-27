@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { EXIT, exitCodeFor, RevolutError, reportError } from "./errors.ts";
+import {
+  EXIT,
+  exitCodeFor,
+  RevolutError,
+  reportError,
+  reportNdjson,
+  reportSuccess,
+  stringify,
+} from "./errors.ts";
 
 describe("RevolutError", () => {
   it("defaults is_retriable to false", () => {
@@ -137,5 +145,143 @@ describe("reportError", () => {
     ).toThrow("__exit__");
     const json = JSON.parse(written);
     expect(json.suggestions).toEqual(["a", "b", "c"]);
+  });
+
+  it("surfaces revolut_error_code when present", () => {
+    expect(() =>
+      reportError(
+        new RevolutError("blocked", {
+          code: "IP_NOT_WHITELISTED",
+          status: 403,
+          revolut_error_code: 9002,
+        }),
+        "balance",
+      ),
+    ).toThrow("__exit__");
+    const json = JSON.parse(written);
+    expect(json.revolut_error_code).toBe(9002);
+    expect(json.code).toBe("IP_NOT_WHITELISTED");
+    expect(exitCode).toBe(EXIT.NOPERM);
+  });
+});
+
+describe("reportSuccess", () => {
+  let exitCode: number | undefined;
+  let written: string;
+
+  beforeEach(() => {
+    exitCode = undefined;
+    written = "";
+    vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      exitCode = code;
+      throw new Error("__exit__");
+    }) as unknown as never);
+    vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
+      written += String(chunk);
+      return true;
+    }) as unknown as typeof process.stdout.write);
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("emits an {ok:true, data, command} envelope", () => {
+    expect(() => reportSuccess({ slug: "x" }, "accounts")).toThrow("__exit__");
+    const json = JSON.parse(written);
+    expect(json).toEqual({
+      ok: true,
+      data: { slug: "x" },
+      command: "accounts",
+    });
+    expect(exitCode).toBe(0);
+  });
+
+  it("merges extras into the envelope", () => {
+    expect(() => reportSuccess([], "balance", { account: "all" })).toThrow(
+      "__exit__",
+    );
+    const json = JSON.parse(written);
+    expect(json.account).toBe("all");
+  });
+});
+
+describe("reportNdjson", () => {
+  let exitCode: number | undefined;
+  let written: string;
+
+  beforeEach(() => {
+    exitCode = undefined;
+    written = "";
+    vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      exitCode = code;
+      throw new Error("__exit__");
+    }) as unknown as never);
+    vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
+      written += String(chunk);
+      return true;
+    }) as unknown as typeof process.stdout.write);
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("emits one line per item plus a trailing meta line", () => {
+    expect(() =>
+      reportNdjson([{ id: "a" }, { id: "b" }], {
+        has_more: false,
+        returned: 2,
+        limit: 100,
+      }),
+    ).toThrow("__exit__");
+
+    const lines = written.trim().split("\n");
+    expect(lines).toHaveLength(3);
+    expect(JSON.parse(lines[0] as string)).toEqual({ id: "a" });
+    expect(JSON.parse(lines[1] as string)).toEqual({ id: "b" });
+    expect(JSON.parse(lines[2] as string)).toEqual({
+      ok: true,
+      meta: { has_more: false, returned: 2, limit: 100 },
+    });
+    expect(exitCode).toBe(0);
+  });
+
+  it("each item is on its own compact single line", () => {
+    expect(() => reportNdjson([{ a: 1, b: 2 }])).toThrow("__exit__");
+    // Compact => no internal newlines in each line.
+    const firstLine = written.trim().split("\n")[0] ?? "";
+    expect(firstLine).not.toMatch(/\n/);
+    expect(firstLine).toBe('{"a":1,"b":2}');
+  });
+});
+
+describe("stringify", () => {
+  let originalIsTTY: boolean | undefined;
+
+  beforeEach(() => {
+    originalIsTTY = process.stdout.isTTY;
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process.stdout, "isTTY", {
+      value: originalIsTTY,
+      writable: true,
+      configurable: true,
+    });
+  });
+
+  it("returns 2-space indented JSON when stdout is a TTY", () => {
+    Object.defineProperty(process.stdout, "isTTY", {
+      value: true,
+      writable: true,
+      configurable: true,
+    });
+    expect(stringify({ a: 1 })).toBe('{\n  "a": 1\n}');
+  });
+
+  it("returns compact JSON when stdout is piped", () => {
+    Object.defineProperty(process.stdout, "isTTY", {
+      value: false,
+      writable: true,
+      configurable: true,
+    });
+    expect(stringify({ a: 1 })).toBe('{"a":1}');
   });
 });

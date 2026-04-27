@@ -74,13 +74,15 @@ Available for `--fields`: `id`, `type`, `state`, `date`, `amount`, `formatted`, 
 
 ## Error Recovery
 
-Every error envelope carries a stable `code` and `is_retriable` boolean. Switch on `code`, not on the message string.
+Every error envelope carries a stable `code` and `is_retriable` boolean. Switch on `code`, not on the message string. The `revolut_error_code` field surfaces Revolut's own numeric error code from the response body (e.g. `9002` for IP-whitelist violations) so agents can route on vendor codes when needed.
 
 | Code | Exit | Retriable | What to do |
 |---|---|---|---|
 | `AUTH_MISSING` | 77 | no | Ask the human to run `revolutcli auth`. Do not retry. |
 | `AUTH_EXPIRED` | 77 | no | Refresh-token rotation failed. Ask the human to re-run `revolutcli auth`. |
-| `AUTH_REFUSED` | 77 | no | Credentials rejected. Verify `REVOLUT_CLIENT_ID` + private key, then re-run `auth`. |
+| `AUTH_REFUSED` | 77 | no | HTTP 401. Credentials rejected. Verify `REVOLUT_CLIENT_ID` + private key, then re-run `auth`. |
+| `IP_NOT_WHITELISTED` | 77 | no | HTTP 403 with Revolut code 9002. **Re-auth will not fix this.** Tell the human to add the egress IP to the Revolut Business app whitelist (Business Portal → Settings → API → app → IP whitelist). |
+| `INSUFFICIENT_SCOPE` | 77 | no | HTTP 403 without IP-whitelist signal. Usually missing API scope. Tell the human to check the app's permissions. |
 | `USAGE` | 64 | no | Surface the message; the call is malformed. |
 | `VALIDATION` | 65 | no | Input failed format check (ISO date, slug shape). Fix and re-call. |
 | `ACCOUNT_NOT_FOUND` | 78 | no | Read `suggestions[]` for valid slugs. Pick one and retry. |
@@ -102,16 +104,28 @@ revolutcli transactions --account anvil-cottage \
   --from 2026-04-01 --fields counterParty,amount,date --limit 20
 ```
 
-### Paging through more than 100 transactions
+### Streaming many transactions (NDJSON)
+```bash
+# One JSON object per line; trailing line carries { ok, meta }.
+revolutcli transactions --account phaia --from 2026-01-01 --limit 1000 --ndjson \
+  | jq -c 'select(.amount and .amount < 0)'
+```
+
+### Paging through more than 1000 transactions
 ```bash
 # First page
-revolutcli transactions --account anvil-cottage --from 2026-01-01 --limit 100
-# If meta.has_more is true, set --to to the oldest result's date.
+revolutcli transactions --account anvil-cottage --from 2026-01-01 --limit 1000
+# If meta.has_more is true, set --to to the oldest result's date and re-call.
 ```
 
 ### Re-auth after refresh-token expiry
 ```bash
 revolutcli auth
+```
+
+### Verify version
+```bash
+revolutcli version | jq -r '.data.version'
 ```
 
 ## MCP

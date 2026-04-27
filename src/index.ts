@@ -7,13 +7,18 @@
  * works.
  *
  * Errors carry `code`, `is_retriable`, optional `status`, optional
- * `retry_after_seconds`, and optional `suggestions`/`recovery_hint`. Exit
- * codes follow sysexits (64 usage, 65 data, 69 unavailable, 77 noperm,
- * 78 not-found) — see `revolutcli schema` for the full table.
+ * `revolut_error_code`, optional `retry_after_seconds`, and optional
+ * `suggestions`/`recovery_hint`. Exit codes follow sysexits (64 usage,
+ * 65 data, 69 unavailable, 77 noperm, 78 not-found) — see
+ * `revolutcli schema` for the full table.
+ *
+ * Output is **pretty-printed JSON when stdout is a TTY** (humans) and
+ * **compact single-line JSON when piped** (agents and `jq`). The
+ * `transactions --ndjson` flag emits one JSON object per line plus a
+ * trailing meta line, for streaming consumers.
  */
 
-import { success } from "@howells/cli";
-import { flag, getLimit } from "@howells/cli/args";
+import { flag, getLimit, hasFlag } from "@howells/cli/args";
 import { listAccounts } from "./accounts.ts";
 import {
   exchangeCode,
@@ -27,7 +32,12 @@ import {
   type TransactionsOptions,
   transactions,
 } from "./commands.ts";
-import { RevolutError, reportError } from "./errors.ts";
+import {
+  RevolutError,
+  reportError,
+  reportNdjson,
+  reportSuccess,
+} from "./errors.ts";
 import { HELP, SCHEMA } from "./schema.ts";
 import { validateAccountName, validateDate } from "./validate.ts";
 
@@ -57,7 +67,7 @@ switch (command) {
         }
         const tokens = await exchangeCode(code);
         const minutes = Math.round((tokens.expires_at - Date.now()) / 60_000);
-        success(
+        reportSuccess(
           {
             cached_at: TOKEN_PATH,
             expires_in_minutes: minutes,
@@ -76,7 +86,7 @@ switch (command) {
       try {
         const token = await getToken("accounts");
         const accounts = await listAccounts(token);
-        success(accounts, "accounts");
+        reportSuccess(accounts, "accounts");
       } catch (err) {
         reportError(err, "accounts");
       }
@@ -94,10 +104,10 @@ switch (command) {
         const token = await getToken("balance");
         if (!acctName || acctName === "all") {
           const data = await allBalances(token);
-          success(data, "balance", { account: "all" });
+          reportSuccess(data, "balance", { account: "all" });
         } else {
           const data = await balance(token, acctName);
-          success(data, "balance", { account: data.slug });
+          reportSuccess(data, "balance", { account: data.slug });
         }
       } catch (err) {
         reportError(err, "balance");
@@ -134,7 +144,14 @@ switch (command) {
 
         const token = await getToken("transactions");
         const page = await transactions(token, acctName, options);
-        success(page.data, "transactions", {
+
+        if (hasFlag("ndjson")) {
+          reportNdjson(page.data, {
+            account: acctName,
+            ...page.meta,
+          });
+        }
+        reportSuccess(page.data, "transactions", {
           account: acctName,
           meta: page.meta,
         });
@@ -146,13 +163,19 @@ switch (command) {
   }
 
   case "schema":
-    success(SCHEMA, "schema");
+    reportSuccess(SCHEMA, "schema");
     break;
 
   case "help":
   case "--help":
   case "-h":
-    success(HELP, "help");
+    reportSuccess(HELP, "help");
+    break;
+
+  case "version":
+  case "--version":
+  case "-v":
+    reportSuccess({ name: SCHEMA.cli, version: SCHEMA.version }, "version");
     break;
 
   case undefined:
@@ -182,6 +205,7 @@ switch (command) {
             "balance",
             "transactions",
             "schema",
+            "version",
           ],
         },
       ),

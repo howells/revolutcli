@@ -55,6 +55,9 @@ function tool_error(err: unknown): McpToolResult {
         code: re.code,
         is_retriable: re.is_retriable,
         ...(re.status !== undefined ? { status: re.status } : {}),
+        ...(re.revolut_error_code !== undefined
+          ? { revolut_error_code: re.revolut_error_code }
+          : {}),
         ...(re.retry_after_seconds !== undefined
           ? { retry_after_seconds: re.retry_after_seconds }
           : {}),

@@ -18,6 +18,8 @@ export type RevolutErrorCode =
   | "AUTH_MISSING"
   | "AUTH_EXPIRED"
   | "AUTH_REFUSED"
+  | "IP_NOT_WHITELISTED"
+  | "INSUFFICIENT_SCOPE"
   | "VALIDATION"
   | "ACCOUNT_NOT_FOUND"
   | "RATE_LIMITED"
@@ -50,6 +52,11 @@ export interface RevolutErrorOptions {
   recovery_hint?: string;
   /** Structured suggestions — for "did you mean?" surfaces (e.g. valid slugs). */
   suggestions?: string[];
+  /**
+   * Numeric error code from Revolut's response body (e.g. 9002 for IP whitelist).
+   * Surfaced verbatim so agents can route on Revolut's vendor codes too.
+   */
+  revolut_error_code?: number;
   /** Underlying cause, if any. Not surfaced to agents. */
   cause?: unknown;
 }
@@ -67,6 +74,7 @@ export class RevolutError extends Error {
   readonly retry_after_seconds?: number;
   readonly recovery_hint?: string;
   readonly suggestions?: string[];
+  readonly revolut_error_code?: number;
 
   constructor(message: string, opts: RevolutErrorOptions) {
     super(message, opts.cause ? { cause: opts.cause } : undefined);
@@ -77,6 +85,7 @@ export class RevolutError extends Error {
     this.retry_after_seconds = opts.retry_after_seconds;
     this.recovery_hint = opts.recovery_hint;
     this.suggestions = opts.suggestions;
+    this.revolut_error_code = opts.revolut_error_code;
   }
 }
 
@@ -90,6 +99,8 @@ export function exitCodeFor(code: RevolutErrorCode): number {
     case "AUTH_MISSING":
     case "AUTH_EXPIRED":
     case "AUTH_REFUSED":
+    case "IP_NOT_WHITELISTED":
+    case "INSUFFICIENT_SCOPE":
       return EXIT.NOPERM;
     case "ACCOUNT_NOT_FOUND":
       return EXIT.NOTFOUND;
@@ -119,6 +130,9 @@ export function reportError(err: unknown, command?: string): never {
   };
   if (command) envelope.command = command;
   if (re.status !== undefined) envelope.status = re.status;
+  if (re.revolut_error_code !== undefined) {
+    envelope.revolut_error_code = re.revolut_error_code;
+  }
   if (re.retry_after_seconds !== undefined) {
     envelope.retry_after_seconds = re.retry_after_seconds;
   }
@@ -127,8 +141,60 @@ export function reportError(err: unknown, command?: string): never {
     envelope.suggestions = re.suggestions;
   }
 
-  process.stdout.write(`${JSON.stringify(envelope, null, 2)}\n`);
+  process.stdout.write(`${stringify(envelope)}\n`);
   process.exit(exitCodeFor(re.code));
+}
+
+/**
+ * JSON encoder that picks formatting based on whether stdout is a TTY:
+ * pretty (2-space indent) when a human is reading, compact (single line)
+ * when piped — agents and `jq` both prefer compact, humans prefer indented.
+ */
+export function stringify(value: unknown): string {
+  return process.stdout.isTTY
+    ? JSON.stringify(value, null, 2)
+    : JSON.stringify(value);
+}
+
+/**
+ * Emit a success envelope and exit cleanly.
+ *
+ * Mirrors @howells/cli's `success()` shape but routes through `stringify()`
+ * so output is compact when piped.
+ */
+export function reportSuccess(
+  data: unknown,
+  command?: string,
+  extra?: Record<string, unknown>,
+): never {
+  const envelope: Record<string, unknown> = { ok: true, data };
+  if (command) envelope.command = command;
+  if (extra) Object.assign(envelope, extra);
+  process.stdout.write(`${stringify(envelope)}\n`);
+  process.exit(EXIT.OK);
+}
+
+/**
+ * Emit a list of items as newline-delimited JSON (NDJSON) and exit.
+ *
+ * Each item becomes its own compact JSON line. Used by `transactions
+ * --ndjson` so streaming consumers can process row-by-row without buffering
+ * the whole envelope.
+ *
+ * The closing line is `{"ok":true,"meta":...}` so consumers can still detect
+ * truncation (meta.has_more) without a separate request.
+ */
+export function reportNdjson(
+  items: unknown[],
+  meta?: Record<string, unknown>,
+): never {
+  for (const item of items) {
+    process.stdout.write(`${JSON.stringify(item)}\n`);
+  }
+  if (meta) {
+    process.stdout.write(`${JSON.stringify({ ok: true, meta })}\n`);
+  }
+  process.exit(EXIT.OK);
 }
 
 function toInternal(err: unknown): RevolutError {
