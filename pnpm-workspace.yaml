@@ -1,0 +1,7 @@
+packages:
+  - "."
+
+# pnpm 11 treats an ignored build script as an error, so every dependency
+# whose install script this repository needs must be named here.
+allowBuilds:
+  esbuild: true
